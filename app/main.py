@@ -9,7 +9,9 @@ from dotenv import load_dotenv
 from .services.rag_service import RAGService
 from .services.azure_openai_service import AzureOpenAIService
 from .services.ado_service import AzureDevOpsService
+from .services.impact_service import ImpactService
 from .models.analysis import ChangeAnalysisRequest, ChangeAnalysisResponse, ChangeAnalysisRequestForm, CodeChange, ChangeAnalysisResponseWithCode
+from .models.impact import ImpactAnalysisResponse, ImpactAnalysisRequestForm
 from .utils.diff_utils import is_diff_format, extract_file_content_from_diff
 
 # Load environment variables
@@ -33,6 +35,7 @@ app.add_middleware(
 # Initialize services
 rag_service = RAGService()
 openai_service = AzureOpenAIService()
+impact_service = ImpactService()
 
 # Conditionally initialize ADO service
 ENABLE_ADO_INTEGRATION = os.getenv("ENABLE_ADO_INTEGRATION", "false").lower() == "true"
@@ -124,6 +127,44 @@ async def analyze_changes(
             )
         
         return response
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/impact/analyze", response_model=ImpactAnalysisResponse)
+async def analyze_impact(
+    request: ImpactAnalysisRequestForm = Depends()
+):
+    """
+    Analyze code changes to identify changed methods and their impact on other methods
+    """
+    try:
+        # Validate that we have matching numbers of base and updated files
+        if len(request.base_files) != len(request.updated_files):
+            raise HTTPException(
+                status_code=400,
+                detail="Number of base files must match number of updated files"
+            )
+        
+        # Read file contents
+        base_contents = []
+        updated_contents = []
+        
+        for base_file, updated_file in zip(request.base_files, request.updated_files):
+            base_content = await base_file.read()
+            updated_content = await updated_file.read()
+            
+            base_contents.append(base_content)
+            updated_contents.append(updated_content)
+        
+        # Analyze impact using the impact service
+        result = await impact_service.analyze_impact(
+            base_files=base_contents,
+            updated_files=updated_contents,
+            file_paths=request.file_paths
+        )
+        
+        return result
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
