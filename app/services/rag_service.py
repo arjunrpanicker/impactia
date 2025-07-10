@@ -313,45 +313,53 @@ class RAGService:
         methods = []
         lines = content.split('\n')
         
-        # Match common method patterns
+        # More precise method patterns - only match actual function/method definitions
         patterns = [
-            # Python
-            (r'def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\([^)]*\)\s*:', 1),
-            # JavaScript/TypeScript
-            (r'(async\s+)?function\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\([^)]*\)', 2),
-            # C#/Java
-            (r'(public|private|protected|internal)?\s+[a-zA-Z_<>[\]]+\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\([^)]*\)', 2),
+            # Python functions: def methodName(
+            (r'^\s*def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\([^)]*\)\s*:', 1),
+            # Python async functions: async def methodName(
+            (r'^\s*async\s+def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\([^)]*\)\s*:', 1),
+            # JavaScript/TypeScript functions: function methodName(
+            (r'^\s*(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\([^)]*\)', 1),
+            # JavaScript/TypeScript methods: methodName() {
+            (r'^\s*(?:async\s+)?([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\([^)]*\)\s*\{', 1),
+            # C# methods: public/private returnType MethodName(
+            (r'^\s*(?:public|private|protected|internal)\s+(?:static\s+)?(?:async\s+)?[a-zA-Z_<>[\]]+\s+([A-Z][a-zA-Z0-9_]*)\s*\([^)]*\)', 1),
+            # Java methods: public/private returnType methodName(
+            (r'^\s*(?:public|private|protected)\s+(?:static\s+)?[a-zA-Z_<>[\]]+\s+([a-z][a-zA-Z0-9_]*)\s*\([^)]*\)', 1),
         ]
+        
+        # Keywords and built-ins to exclude
+        excluded_keywords = {
+            'if', 'for', 'while', 'def', 'class', 'return', 'import', 'from', 'try', 'except', 'with',
+            'function', 'var', 'let', 'const', 'new', 'this', 'super', 'static', 'public', 'private',
+            'protected', 'internal', 'async', 'await', 'yield', 'break', 'continue', 'switch', 'case'
+        }
         
         for i, line in enumerate(lines, 1):
             for pattern, group_idx in patterns:
-                matches = re.finditer(pattern, line)
+                matches = re.finditer(pattern, line, re.IGNORECASE)
                 for match in matches:
                     method_name = match.group(group_idx)
                     
-                    # Extract complete function using regex
-                    if pattern.startswith('def'):  # Python function
-                        # Find the complete function definition
-                        func_pattern = rf'def\s+{re.escape(method_name)}\s*\([^)]*\)\s*:.*?(?=\n\s*def|\n\s*class|\Z)'
-                        func_match = re.search(func_pattern, content, re.DOTALL | re.MULTILINE)
-                        if func_match:
-                            method_content = func_match.group(0)
-                        else:
-                            # Fallback to context window
-                            start_line = max(0, i - 5)
-                            end_line = min(len(lines), i + 50)  # Increased context
-                            method_content = '\n'.join(lines[start_line:end_line])
-                    else:
-                        # For non-Python, use larger context window
-                        start_line = max(0, i - 5)
-                        end_line = min(len(lines), i + 50)
-                        method_content = '\n'.join(lines[start_line:end_line])
+                    # Skip if it's a keyword or built-in
+                    if method_name.lower() in excluded_keywords:
+                        continue
+                    
+                    # Skip variables (simple heuristic: if line contains '=' before the method name)
+                    line_before_method = line[:match.start()]
+                    if '=' in line_before_method and not any(keyword in line_before_method for keyword in ['def ', 'function ', 'public ', 'private ']):
+                        continue
+                    
+                    # For method content, just use the method signature line
+                    method_content = line.strip()
                     
                     methods.append({
                         "name": method_name,
                         "content": method_content,
                         "start_line": i
                     })
+                    break  # Only match first pattern per line
         
         return methods
 
