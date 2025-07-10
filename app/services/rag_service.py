@@ -2,6 +2,8 @@ import os
 import zipfile
 import tempfile
 import asyncio
+import json
+import hashlib
 from typing import Dict, Any, List, Tuple
 from supabase import create_client, Client
 from fastapi import UploadFile
@@ -15,9 +17,35 @@ class RAGService:
             os.getenv("SUPABASE_KEY", "")
         )
         self.openai_service = AzureOpenAIService()
-        self.batch_size = 20  # Increased batch size
+        self.batch_size = 15  # Optimized batch size
         self.skip_tests = True
+        self.cache = {}  # Simple in-memory cache for embeddings
 
+    def _get_file_hash(self, content: str) -> str:
+        """Generate hash for file content to detect changes"""
+        return hashlib.md5(content.encode('utf-8')).hexdigest()
+
+    async def _get_cached_embedding(self, content: str) -> List[float]:
+        """Get embedding from cache or generate new one"""
+        content_hash = self._get_file_hash(content)
+        
+        if content_hash in self.cache:
+            return self.cache[content_hash]
+        
+        # Check if embedding exists in database
+        try:
+            result = self.supabase.table("code_embeddings").select("embedding").eq("content_hash", content_hash).limit(1).execute()
+            if result.data:
+                embedding = result.data[0]["embedding"]
+                self.cache[content_hash] = embedding
+                return embedding
+        except Exception:
+            pass
+        
+        # Generate new embedding
+        embedding = await self.openai_service.get_embeddings(content)
+        self.cache[content_hash] = embedding
+        return embedding
     async def index_repository(self, file: UploadFile) -> IndexingResult:
         """Index repository code into Supabase vector store"""
         try:
@@ -66,6 +94,7 @@ class RAGService:
                     # Process results
                     for result in results:
                         if isinstance(result, Exception):
+                            print(f"Error processing file: {result}")
                             continue
                         if result:
                             indexed_files += 1
@@ -178,7 +207,7 @@ class RAGService:
                 if len(content) > 24000:  # Rough estimate: 1 token ≈ 4 characters
                     content = content[:24000] + "\n... (content truncated due to length)"
                 
-                file_embedding = await self.openai_service.get_embeddings(content)
+                file_embedding = await self._get_cached_embedding(content)
             except Exception as e:
                 print(f"Error generating embedding for {relative_path}: {str(e)}")
                 return 0, 0
@@ -202,7 +231,8 @@ class RAGService:
                 },
                 content=content,
                 file_path=relative_path,
-                code_type="file"
+                code_type="file",
+                content_hash=self._get_file_hash(content)
             )
 
             return len(methods), 1
@@ -325,16 +355,20 @@ class RAGService:
         
         return methods
 
-    async def _store_embeddings(self, embeddings: List[float], metadata: Dict[str, Any], content: str, file_path: str, code_type: str):
+    async def _store_embeddings(self, embeddings: List[float], metadata: Dict[str, Any], content: str, file_path: str, code_type: str, content_hash: str = None):
         """Store embeddings and metadata in Supabase"""
         try:
+            if content_hash is None:
+                content_hash = self._get_file_hash(content)
+                
             data = {
                 "embedding": embeddings,
                 "metadata": metadata,
                 "content": content,
                 "file_path": file_path,
                 "code_type": code_type,
-                "repository": "main"  # TODO: Make this configurable
+                "repository": "main",  # TODO: Make this configurable
+                "content_hash": content_hash
             }
             
             result = self.supabase.table("code_embeddings").insert(data).execute()
@@ -360,13 +394,16 @@ class RAGService:
                 raise ValueError("No valid content or diff found in changes")
 
             # Step 2: Generate embedding for the changes
-            change_embedding = await self.openai_service.get_embeddings(combined_text)
+            change_embedding = await self._get_cached_embedding(combined_text)
             
             # Step 3: Search for semantically similar code with a lower threshold
-            similar_code = await self._search_similar(change_embedding, limit=10, threshold=0.6)
+            similar_code = await self._search_similar(change_embedding, limit=15, threshold=0.5)
             
             # Step 4: Search for direct references and dependencies
             reference_results = await self._search_references(list(changed_files))
+            
+            # Step 5: Enhanced dependency analysis
+            enhanced_deps = await self._analyze_enhanced_dependencies(changes, similar_code)
             
             # Step 5: Combine and format the results
             return {
@@ -377,6 +414,7 @@ class RAGService:
                 },
                 "dependency_chains": reference_results.get("dependency_chains", []),
                 "dependency_visualization": reference_results.get("dependency_visualization", []),
+                "enhanced_dependencies": enhanced_deps,
                 "similar_code": {
                     "files": [
                         {
@@ -404,6 +442,93 @@ class RAGService:
         except Exception as e:
             raise Exception(f"Failed to get related code: {str(e)}")
 
+    async def _analyze_enhanced_dependencies(self, changes: List[CodeChange], similar_code: List[Dict]) -> Dict[str, Any]:
+        """Enhanced dependency analysis using multiple strategies"""
+        try:
+            dependencies = {
+                "method_calls": [],
+                "import_dependencies": [],
+                "data_flow": [],
+                "interface_dependencies": []
+            }
+            
+            for change in changes:
+                content = change.content or ""
+                
+                # Analyze method calls
+                method_calls = self._extract_method_calls(content)
+                dependencies["method_calls"].extend([
+                    {"file": change.file_path, "calls": method_calls}
+                ])
+                
+                # Analyze imports
+                imports = self._extract_imports(content)
+                dependencies["import_dependencies"].extend([
+                    {"file": change.file_path, "imports": imports}
+                ])
+                
+                # Analyze data flow (variables, parameters)
+                data_flow = self._extract_data_flow(content)
+                dependencies["data_flow"].extend([
+                    {"file": change.file_path, "data_flow": data_flow}
+                ])
+            
+            return dependencies
+            
+        except Exception as e:
+            print(f"Error in enhanced dependency analysis: {e}")
+            return {}
+
+    def _extract_method_calls(self, content: str) -> List[str]:
+        """Extract method calls from code content"""
+        import re
+        
+        # Pattern for method calls: word followed by parentheses
+        pattern = r'([a-zA-Z_][a-zA-Z0-9_]*)\s*\('
+        matches = re.findall(pattern, content)
+        
+        # Filter out common keywords and built-ins
+        keywords = {'if', 'for', 'while', 'def', 'class', 'return', 'import', 'from', 'try', 'except', 'with'}
+        return [match for match in set(matches) if match not in keywords]
+
+    def _extract_imports(self, content: str) -> List[str]:
+        """Extract import statements from code content"""
+        import re
+        
+        imports = []
+        
+        # Python imports
+        import_patterns = [
+            r'from\s+([a-zA-Z_][a-zA-Z0-9_.]*)\s+import',
+            r'import\s+([a-zA-Z_][a-zA-Z0-9_.]*)',
+        ]
+        
+        for pattern in import_patterns:
+            matches = re.findall(pattern, content)
+            imports.extend(matches)
+        
+        return list(set(imports))
+
+    def _extract_data_flow(self, content: str) -> List[str]:
+        """Extract data flow patterns from code content"""
+        import re
+        
+        data_flow = []
+        
+        # Variable assignments
+        assignment_pattern = r'([a-zA-Z_][a-zA-Z0-9_]*)\s*='
+        assignments = re.findall(assignment_pattern, content)
+        data_flow.extend([f"assigns:{var}" for var in set(assignments)])
+        
+        # Function parameters
+        param_pattern = r'def\s+[a-zA-Z_][a-zA-Z0-9_]*\s*\(([^)]*)\)'
+        param_matches = re.findall(param_pattern, content)
+        for params in param_matches:
+            if params.strip():
+                param_list = [p.strip().split('=')[0].strip() for p in params.split(',')]
+                data_flow.extend([f"param:{param}" for param in param_list if param])
+        
+        return data_flow
     async def _search_similar(self, query_embedding: List[float], limit: int = 5, threshold: float = 0.7):
         """Search for similar code using vector similarity"""
         try:

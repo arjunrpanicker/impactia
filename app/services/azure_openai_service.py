@@ -1,5 +1,7 @@
 import os
 import json
+import asyncio
+from functools import lru_cache
 from typing import List, Dict, Any
 from openai import AzureOpenAI
 from ..models.analysis import RiskLevel, ChangeAnalysisResponse, ChangedComponent, CodeChange
@@ -19,15 +21,122 @@ class AzureOpenAIService:
         )
         self.deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
         self.embeddings_deployment = os.getenv("AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT_NAME")
+        self._embedding_cache = {}
+        self._analysis_cache = {}
 
+    @lru_cache(maxsize=100)
+    def _get_cached_prompt_template(self, analysis_type: str) -> str:
+        """Get cached prompt templates for different analysis types"""
+        templates = {
+            "impact_analysis": """Analyze these code changes and their dependencies to provide a comprehensive impact analysis in the required JSON format:
+
+CHANGES:
+{changes}
+
+{ui_context}
+
+DEPENDENCY INFORMATION:
+{dependencies}
+
+SIMILAR CODE PATTERNS:
+{similar_code}
+
+{diff_summaries}
+
+Analyze and include in your response:
+1. A clear summary of the changes and their impact
+2. Detailed analysis of each changed file, including:
+   - Changed methods (use exact names as in code, case and underscores must match) and their new behavior
+   - Dependent methods in other files that may be affected
+   - For UI components:
+     * Component rendering and behavior changes
+     * User interaction modifications
+     * Visual and layout changes
+     * State management updates
+     * Integration point changes
+3. Complete dependency chains showing how changes propagate through the codebase
+4. Visualization of dependencies between files
+
+IMPORTANT: Respond with ONLY a valid JSON object matching the structure specified. No additional text or explanations.""",
+            
+            "method_analysis": """Analyze the following method changes and provide detailed impact analysis:
+
+METHOD CHANGES:
+{method_changes}
+
+CONTEXT:
+{context}
+
+Provide analysis focusing on:
+1. Functional changes in each method
+2. Impact on calling methods
+3. Data flow changes
+4. Error handling modifications
+
+Return as JSON with method-level details."""
+        }
+        return templates.get(analysis_type, templates["impact_analysis"])
     async def get_embeddings(self, text: str) -> List[float]:
         """Get embeddings for text using Azure OpenAI"""
-        response = self.client.embeddings.create(
-            model=self.embeddings_deployment,
-            input=text
-        )
-        return response.data[0].embedding
+        # Check cache first
+        text_hash = hash(text)
+        if text_hash in self._embedding_cache:
+            return self._embedding_cache[text_hash]
+        
+        try:
+            response = self.client.embeddings.create(
+                model=self.embeddings_deployment,
+                input=text
+            )
+            embedding = response.data[0].embedding
+            
+            # Cache the result
+            self._embedding_cache[text_hash] = embedding
+            return embedding
+            
+        except Exception as e:
+            print(f"Error generating embedding: {e}")
+            raise
 
+    async def get_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
+        """Get embeddings for multiple texts in batch"""
+        try:
+            # Check cache for each text
+            results = []
+            uncached_texts = []
+            uncached_indices = []
+            
+            for i, text in enumerate(texts):
+                text_hash = hash(text)
+                if text_hash in self._embedding_cache:
+                    results.append(self._embedding_cache[text_hash])
+                else:
+                    results.append(None)
+                    uncached_texts.append(text)
+                    uncached_indices.append(i)
+            
+            # Get embeddings for uncached texts
+            if uncached_texts:
+                response = self.client.embeddings.create(
+                    model=self.embeddings_deployment,
+                    input=uncached_texts
+                )
+                
+                # Update results and cache
+                for i, embedding_data in enumerate(response.data):
+                    embedding = embedding_data.embedding
+                    result_index = uncached_indices[i]
+                    results[result_index] = embedding
+                    
+                    # Cache the result
+                    text_hash = hash(uncached_texts[i])
+                    self._embedding_cache[text_hash] = embedding
+            
+            return results
+            
+        except Exception as e:
+            print(f"Error generating batch embeddings: {e}")
+            raise
     def _extract_methods(self, content: str) -> List[Dict[str, str]]:
         """Extract methods from code content"""
         import re
@@ -77,6 +186,35 @@ class AzureOpenAIService:
         
         return methods
 
+    def _optimize_prompt_content(self, content: str, max_tokens: int = 6000) -> str:
+        """Optimize content for prompt to stay within token limits"""
+        if len(content) <= max_tokens * 4:  # Rough estimate: 1 token ≈ 4 characters
+            return content
+        
+        # Prioritize keeping method definitions and important sections
+        lines = content.split('\n')
+        important_lines = []
+        regular_lines = []
+        
+        for line in lines:
+            if any(keyword in line.lower() for keyword in ['def ', 'function ', 'class ', 'import ', 'from ']):
+                important_lines.append(line)
+            else:
+                regular_lines.append(line)
+        
+        # Start with important lines
+        result = '\n'.join(important_lines)
+        
+        # Add regular lines until we reach the limit
+        remaining_space = max_tokens * 4 - len(result)
+        if remaining_space > 0:
+            additional_content = '\n'.join(regular_lines)
+            if len(additional_content) <= remaining_space:
+                result += '\n' + additional_content
+            else:
+                result += '\n' + additional_content[:remaining_space] + '\n... (content truncated)'
+        
+        return result
     async def analyze_impact(self, changes: List[CodeChange], related_code: Dict[str, Any]) -> ChangeAnalysisResponseWithCode:
         """Analyze the impact of code changes using Azure OpenAI and include full method code and impacted file content."""
         import re
@@ -95,7 +233,9 @@ class AzureOpenAIService:
             if change.diff:
                 change_text += f"Diff:\n{change.diff}\n"
             elif change.content:
-                change_text += f"Content:\n{change.content}\n"
+                # Optimize content for prompt
+                optimized_content = self._optimize_prompt_content(change.content)
+                change_text += f"Content:\n{optimized_content}\n"
             formatted_changes.append(change_text)
 
         # Add UI-specific context if needed
@@ -148,6 +288,18 @@ class AzureOpenAIService:
             for ref in deps.get("outgoing", []):
                 dependencies_text += f"- {ref}\n"
 
+        # Add enhanced dependency information
+        if "enhanced_dependencies" in related_code:
+            enhanced_deps = related_code["enhanced_dependencies"]
+            dependencies_text += "\nEnhanced Dependency Analysis:\n"
+            
+            for method_call_info in enhanced_deps.get("method_calls", []):
+                dependencies_text += f"\nFile: {method_call_info['file']}\n"
+                dependencies_text += f"Method calls: {', '.join(method_call_info['calls'])}\n"
+            
+            for import_info in enhanced_deps.get("import_dependencies", []):
+                dependencies_text += f"\nFile: {import_info['file']}\n"
+                dependencies_text += f"Imports: {', '.join(import_info['imports'])}\n"
         # Add dependency chain information
         if "dependency_chains" in related_code:
             dependencies_text += "\nDetailed Dependency Chains:\n"
@@ -213,34 +365,14 @@ class AzureOpenAIService:
                 diff_summaries_text += f"\nFunctional change summary for {file_path}.{method_name}:\n{summary}\n"
 
         # Prepare the prompt
-        prompt = f"""{diff_summaries_text}\n\nAnalyze these code changes and their dependencies to provide a comprehensive impact analysis in the required JSON format:
-
-CHANGES:
-{''.join(formatted_changes)}
-
-{ui_context}
-
-DEPENDENCY INFORMATION:
-{dependencies_text}
-
-SIMILAR CODE PATTERNS:
-{similar_code_text}
-
-Analyze and include in your response:
-1. A clear summary of the changes and their impact
-2. Detailed analysis of each changed file, including:
-   - Changed methods (use exact names as in code, case and underscores must match) and their new behavior
-   - Dependent methods in other files that may be affected
-   - For UI components:
-     * Component rendering and behavior changes
-     * User interaction modifications
-     * Visual and layout changes
-     * State management updates
-     * Integration point changes
-3. Complete dependency chains showing how changes propagate through the codebase
-4. Visualization of dependencies between files
-
-IMPORTANT: Respond with ONLY a valid JSON object matching the structure specified. No additional text or explanations."""
+        prompt_template = self._get_cached_prompt_template("impact_analysis")
+        prompt = prompt_template.format(
+            changes=''.join(formatted_changes),
+            ui_context=ui_context,
+            dependencies=dependencies_text,
+            similar_code=similar_code_text,
+            diff_summaries=diff_summaries_text
+        )
         
         # Update prompt to instruct LLM to use exact method names as in code, not to guess, and only include top-level functions
         prompt = prompt.replace(
@@ -248,13 +380,19 @@ IMPORTANT: Respond with ONLY a valid JSON object matching the structure specifie
             "- Changed methods (use exact names as in code, case and underscores must match, and ONLY include top-level function or method names that actually exist in the provided code for each file; do NOT guess, hallucinate, or include variables/classes/inner blocks) and their new behavior"
         )
         
+        # Check analysis cache
+        prompt_hash = hash(prompt)
+        if prompt_hash in self._analysis_cache:
+            print("[DEBUG] Using cached analysis result")
+            analysis_json = self._analysis_cache[prompt_hash]
+        else:
         # Get completion from Azure OpenAI
-        response = self.client.chat.completions.create(
-            model=self.deployment_name,
-            messages=[
-                {
-                    "role": "system", 
-                    "content": """You are a code analysis expert. Analyze the impact of code changes and their dependencies to provide detailed insights.
+            response = self.client.chat.completions.create(
+                model=self.deployment_name,
+                messages=[
+                    {
+                        "role": "system", 
+                        "content": """You are a code analysis expert. Analyze the impact of code changes and their dependencies to provide detailed insights.
 IMPORTANT: Your response must be ONLY a valid JSON object with no additional text or explanation.
 
 Required JSON structure:
@@ -325,22 +463,23 @@ Rules:
     - Consider event handlers as methods
     - Include state management methods
     - Consider UI-specific dependencies"""
-                },
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.1,
-            max_tokens=2000,
-            response_format={ "type": "json_object" }
-        )
-        
-        try:
-            # Parse the JSON response
+                    },
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1,
+                max_tokens=2000,
+                response_format={ "type": "json_object" }
+            )
+            
+            # Parse and cache the response
             response_text = response.choices[0].message.content.strip()
             if not response_text:
                 raise Exception("Empty response from GPT")
                 
             analysis_json = json.loads(response_text)
-            
+            self._analysis_cache[prompt_hash] = analysis_json
+        
+        try:
             # Validate required fields
             required_fields = ["summary", "changed_components"]
             missing_fields = [field for field in required_fields if field not in analysis_json]
@@ -435,7 +574,7 @@ Rules:
             )
             
         except json.JSONDecodeError as e:
-            print(f"Raw GPT response: {response.choices[0].message.content}")
+            print(f"Raw GPT response: {response_text if 'response_text' in locals() else 'No response'}")
             raise Exception(f"Failed to parse GPT response as JSON: {str(e)}")
         except KeyError as e:
             raise Exception(f"Missing required field in GPT response: {str(e)}")
