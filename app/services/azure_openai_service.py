@@ -9,7 +9,8 @@ from ..models.analysis import (
     RiskLevel, ChangeAnalysisResponseWithCode, ChangedComponentWithCode, MethodWithCode,
     DependencyChainWithCode, DependentFileWithCode, DependentMethodWithSummary
 )
-from .diff_service import generate_functional_diff
+from .change_summary_service import ChangeSummaryService
+from .method_extractor import MethodExtractor
 from ..utils.diff_utils import is_diff_format
 
 class AzureOpenAIService:
@@ -23,6 +24,8 @@ class AzureOpenAIService:
         self.embeddings_deployment = os.getenv("AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT_NAME")
         self._embedding_cache = {}
         self._analysis_cache = {}
+        self.change_summary_service = ChangeSummaryService()
+        self.method_extractor = MethodExtractor()
 
     @lru_cache(maxsize=100)
     def _get_cached_prompt_template(self, analysis_type: str) -> str:
@@ -137,54 +140,29 @@ Return as JSON with method-level details."""
         except Exception as e:
             print(f"Error generating batch embeddings: {e}")
             raise
-    def _extract_methods(self, content: str) -> List[Dict[str, str]]:
+    def _extract_methods(self, content: str, file_path: str = "") -> List[Dict[str, str]]:
         """Extract methods from code content"""
-        import re
+        try:
+            # Use the enhanced method extractor
+            method_infos = self.method_extractor.extract_methods_from_content(content, file_path)
+            
+            methods = []
+            for method_info in method_infos:
+                method_content = self.method_extractor.get_method_content(content, method_info)
+                methods.append({
+                    "name": method_info.name,
+                    "content": method_content,
+                    "start_line": method_info.start_line,
+                    "signature": method_info.signature,
+                    "is_async": method_info.is_async,
+                    "is_static": method_info.is_static
+                })
+            
+            return methods
         
-        methods = []
-        lines = content.split('\n')
-        
-        # Match common method patterns
-        patterns = [
-            # Python
-            (r'def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\([^)]*\)\s*:', 1),
-            # JavaScript/TypeScript
-            (r'(async\s+)?function\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\([^)]*\)', 2),
-            # C#/Java
-            (r'(public|private|protected|internal)?\s+[a-zA-Z_<>[\]]+\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\([^)]*\)', 2),
-        ]
-        
-        for i, line in enumerate(lines, 1):
-            for pattern, group_idx in patterns:
-                matches = re.finditer(pattern, line)
-                for match in matches:
-                    method_name = match.group(group_idx)
-                    
-                    # Extract complete function using regex
-                    if pattern.startswith('def'):  # Python function
-                        # Find the complete function definition
-                        func_pattern = rf'def\s+{re.escape(method_name)}\s*\([^)]*\)\s*:.*?(?=\n\s*def|\n\s*class|\Z)'
-                        func_match = re.search(func_pattern, content, re.DOTALL | re.MULTILINE)
-                        if func_match:
-                            method_content = func_match.group(0)
-                        else:
-                            # Fallback to context window
-                            start_line = max(0, i - 5)
-                            end_line = min(len(lines), i + 50)  # Increased context
-                            method_content = '\n'.join(lines[start_line:end_line])
-                    else:
-                        # For non-Python, use larger context window
-                        start_line = max(0, i - 5)
-                        end_line = min(len(lines), i + 50)
-                        method_content = '\n'.join(lines[start_line:end_line])
-                    
-                    methods.append({
-                        "name": method_name,
-                        "content": method_content,
-                        "start_line": i
-                    })
-        
-        return methods
+        except Exception as e:
+            print(f"Error extracting methods from {file_path}: {e}")
+            return []
 
     def _optimize_prompt_content(self, content: str, max_tokens: int = 6000) -> str:
         """Optimize content for prompt to stay within token limits"""
@@ -336,22 +314,23 @@ Return as JSON with method-level details."""
         functional_summaries = {}
         for change in changes:
             file_path = change.file_path
-            base_code = change.content or ''  # For now, use uploaded content as both base and updated (extend as needed)
+            base_code = ''  # We don't have base code in this context
             updated_code = change.content or ''
             
-            # Debug output to see what content we're working with
-            print(f"[DEBUG] Processing file: {file_path}")
-            print(f"[DEBUG] Content type: {'diff' if is_diff_format(base_code) else 'regular'}")
-            print(f"[DEBUG] Content preview (first 200 chars):\n{base_code[:200]}...")
-            
-            # If you have access to both base and updated code, use them here
-            # For each method in the file, generate a summary
-            method_summaries = {}
-            methods = self._extract_methods(updated_code)
-            for m in methods:
-                summary = generate_functional_diff(base_code, updated_code, m['name'])
-                method_summaries[m['name']] = summary
-            functional_summaries[file_path] = method_summaries
+            # Generate change analysis for the file
+            if updated_code:
+                change_analysis = self.change_summary_service.analyze_file_changes(
+                    file_path, base_code, updated_code
+                )
+                
+                # Create summaries for each method
+                method_summaries = {}
+                for method_change in change_analysis.get('method_changes', []):
+                    method_name = method_change['method_name']
+                    summary = method_change['summary']
+                    method_summaries[method_name] = summary
+                
+                functional_summaries[file_path] = method_summaries
         # --- End Functional Diff Summaries ---
 
         # When building the LLM prompt, include the functional summaries for each changed/impacted method
@@ -493,7 +472,7 @@ Rules:
             for change in changes:
                 file_path = change.file_path
                 file_content = change.content or ''
-                methods = self._extract_methods(file_content)
+                methods = self._extract_methods(file_content, file_path)
                 # Normalize method names for robust matching
                 file_method_map[file_path] = {normalize(m['name']): m['content'] for m in methods}
             # 2. Build changed_components with robust method code matching
