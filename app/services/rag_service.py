@@ -380,29 +380,6 @@ class RAGService:
                     break  # Only match first pattern per line
         
         return methods
-                for match in matches:
-                    method_name = match.group(group_idx)
-                    
-                    # Skip if it's a keyword or built-in
-                    if method_name.lower() in excluded_keywords:
-                        continue
-                    
-                    # Skip variables (simple heuristic: if line contains '=' before the method name)
-                    line_before_method = line[:match.start()]
-                    if '=' in line_before_method and not any(keyword in line_before_method for keyword in ['def ', 'function ', 'public ', 'private ']):
-                        continue
-                    
-                    # For method content, just use the method signature line
-                    method_content = line.strip()
-                    
-                    methods.append({
-                        "name": method_name,
-                        "content": method_content,
-                        "start_line": i
-                    })
-                    break  # Only match first pattern per line
-        
-        return methods
 
     async def _store_embeddings(self, embeddings: List[float], metadata: Dict[str, Any], content: str, file_path: str, code_type: str, content_hash: str = None):
         """Store embeddings and metadata in Supabase"""
