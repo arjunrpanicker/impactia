@@ -460,6 +460,14 @@ Rules:
 12. For file summaries:
     - Provide high-level overview of changes in the file
     - Explain the overall purpose and impact
+11. For method summaries:
+    - Explain WHAT changed (functionality, behavior, logic)
+    - Explain WHY it matters (business impact, technical impact)
+    - Be specific about the nature of the change
+    - Focus on functional changes, not implementation details
+12. For file summaries:
+    - Provide high-level overview of changes in the file
+    - Explain the overall purpose and impact
     - Connect individual method changes to file-level impact"""
                     },
                     {"role": "user", "content": prompt}
