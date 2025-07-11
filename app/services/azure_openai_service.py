@@ -460,7 +460,7 @@ Rules:
 12. For file summaries:
     - Provide high-level overview of changes in the file
     - Explain the overall purpose and impact
-    - Connect individual method changes to file-level impact
+    - Connect individual method changes to file-level impact"""
                     },
                     {"role": "user", "content": prompt}
                 ],
