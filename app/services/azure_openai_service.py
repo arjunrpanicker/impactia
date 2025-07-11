@@ -355,8 +355,8 @@ Return as JSON with method-level details."""
         
         # Update prompt to instruct LLM to use exact method names as in code, not to guess, and only include top-level functions
         prompt = prompt.replace(
-            "- Changed methods (use exact names as in code, case and underscores must match, and ONLY include methods that actually exist in the provided code for each file; do NOT guess or hallucinate method names) and their new behavior",
-            "- Changed methods (use exact names as in code, case and underscores must match, and ONLY include top-level function or method names that actually exist in the provided code for each file; do NOT guess, hallucinate, or include variables/classes/inner blocks) and their new behavior"
+            "- Changed methods (use exact names as in code, case and underscores must match) and their new behavior",
+            "- Changed methods with detailed summaries of what changed and why it matters (use exact names as in code, case and underscores must match, and ONLY include top-level function or method names that actually exist in the provided code for each file; do NOT guess, hallucinate, or include variables/classes/inner blocks)"
         )
         
         # Check analysis cache
@@ -380,7 +380,15 @@ Required JSON structure:
     "changed_components": [
         {
             "file_path": "path/to/changed/file",
-            "methods": ["methodName1", "methodName2"],
+            "file_summary": "High-level summary of what changed in this file",
+            "methods": [
+                {
+                    "name": "methodName1",
+                    "summary": "Detailed summary of what changed in this method",
+                    "change_type": "added|modified|removed",
+                    "impact_description": "How this change affects the system"
+                }
+            ],
             "impact_description": "Description of how these methods are impacted",
             "risk_level": "low|medium|high|critical",
             "associated_unit_tests": ["tests/UnitTests/path/to/test1.cs", "tests/UnitTests/path/to/test2.cs"]
@@ -398,6 +406,8 @@ Required JSON structure:
             "impacted_files": [
                 {
                     "file_path": "path/to/dependent/file",
+                    "file_summary": "Summary of how this file is impacted by the changes",
+                    "change_impact": "Specific impact description for this dependent file",
                     "methods": [
                         {
                             "name": "methodName",
@@ -417,7 +427,7 @@ Rules:
 2. All arrays must have at least one item
 3. All fields are required except dependency_chains and dependency_chain_visualization
 4. Use proper JSON formatting with double quotes for strings
-5. Focus on method-level changes and their impact
+5. Focus on change summaries and impact analysis, NOT code content
 6. Include both direct changes and dependency impacts
 7. For dependency chains:
    - Show how changes propagate through the codebase
@@ -442,11 +452,20 @@ Rules:
     - Consider event handlers as methods
     - Include state management methods
     - Consider UI-specific dependencies"""
+11. For method summaries:
+    - Explain WHAT changed (functionality, behavior, logic)
+    - Explain WHY it matters (business impact, technical impact)
+    - Be specific about the nature of the change
+    - Focus on functional changes, not implementation details
+12. For file summaries:
+    - Provide high-level overview of changes in the file
+    - Explain the overall purpose and impact
+    - Connect individual method changes to file-level impact
                     },
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.1,
-                max_tokens=2000,
+                max_tokens=3000,
                 response_format={ "type": "json_object" }
             )
             
@@ -479,38 +498,37 @@ Rules:
             changed_components = []
             for comp in analysis_json["changed_components"]:
                 file_path = comp["file_path"]
+                
+                # Handle both old format (list of strings) and new format (list of objects)
                 method_objs = []
-                method_code_map = file_method_map.get(file_path, {})
-                valid_method_names = set(method_code_map.keys())
-                for method_name in comp["methods"]:
-                    norm_name = normalize(method_name)
-                    code = method_code_map.get(norm_name)
-                    # Fallback: try to find in similar_code.methods from related_code
-                    if code is None:
-                        found_candidates = []
-                        for m in related_code.get('similar_code', {}).get('methods', []):
-                            m_name = normalize(m.get('name', ''))
-                            m_path = m.get('file_path')
-                            if m_name == norm_name:
-                                found_candidates.append((m_path, m.get('content', '')[:60]))
-                                if m_path == file_path:
-                                    code = m.get('content')
-                                    break
-                        # If not found with exact file path, use any candidate with matching name
-                        if code is None and found_candidates:
-                            code = found_candidates[0][1]  # Use the first candidate's code
-                            print(f"[DEBUG] Used fallback code for method '{method_name}' from file '{found_candidates[0][0]}'")
-                        if not found_candidates:
-                            print(f"[DEBUG] No candidates found in vector DB for method '{method_name}' (file: {file_path})")
-                    if code is None:
-                        code = f"Not available: method '{method_name}' not found in uploaded file or vector index"
-                    method_objs.append(MethodWithCode(name=method_name, code=code))
+                methods_data = comp.get("methods", [])
+                
+                if methods_data and isinstance(methods_data[0], dict):
+                    # New format with method objects
+                    for method_data in methods_data:
+                        method_objs.append(MethodWithCode(
+                            name=method_data.get("name", ""),
+                            summary=method_data.get("summary", ""),
+                            change_type=method_data.get("change_type", "modified"),
+                            impact_description=method_data.get("impact_description", "")
+                        ))
+                else:
+                    # Old format with method names only - convert to new format
+                    for method_name in methods_data:
+                        method_objs.append(MethodWithCode(
+                            name=method_name,
+                            summary=f"Method '{method_name}' has been modified",
+                            change_type="modified",
+                            impact_description="Impact analysis not available in legacy format"
+                        ))
+                
                 changed_components.append(ChangedComponentWithCode(
                     file_path=file_path,
                     methods=method_objs,
                     impact_description=comp["impact_description"],
                     risk_level=comp["risk_level"],
-                    associated_unit_tests=comp["associated_unit_tests"]
+                    associated_unit_tests=comp["associated_unit_tests"],
+                    file_summary=comp.get("file_summary", "File has been modified")
                 ))
             # 3. For dependency_chains, add full file content to each impacted file
             dependency_chains = []
@@ -518,22 +536,15 @@ Rules:
                 impacted_files = []
                 for dep in chain.get("impacted_files", []):
                     dep_file_path = dep["file_path"]
-                    # Try to use uploaded content if available
-                    dep_code = uploaded_content_map.get(dep_file_path)
-                    if dep_code is None:
-                        # Try to read from disk
-                        try:
-                            with open(dep_file_path, 'r', encoding='utf-8') as f:
-                                dep_code = f.read()
-                        except Exception:
-                            dep_code = 'Not available'
+                    
                     methods = [
                         DependentMethodWithSummary(name=m["name"], summary=m["summary"]) for m in dep.get("methods", [])
                     ]
                     impacted_files.append(DependentFileWithCode(
                         file_path=dep_file_path,
                         methods=methods,
-                        code=dep_code
+                        file_summary=dep.get("file_summary", "This file is impacted by the changes"),
+                        change_impact=dep.get("change_impact", "Impact analysis pending")
                     ))
                 methods = [
                     DependentMethodWithSummary(name=m["name"], summary=m["summary"]) for m in chain.get("methods", [])

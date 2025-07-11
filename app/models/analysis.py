@@ -59,7 +59,9 @@ class ChangeAnalysisRequest(BaseModel):
 
 class MethodWithCode(BaseModel):
     name: str
-    code: str
+    summary: str
+    change_type: str  # "added", "modified", "removed"
+    impact_description: str
 
 class ChangedComponentWithCode(BaseModel):
     file_path: str
@@ -67,6 +69,7 @@ class ChangedComponentWithCode(BaseModel):
     impact_description: str
     risk_level: RiskLevel
     associated_unit_tests: List[str]
+    file_summary: str
 
 class DependentMethodWithSummary(BaseModel):
     name: str
@@ -75,7 +78,8 @@ class DependentMethodWithSummary(BaseModel):
 class DependentFileWithCode(BaseModel):
     file_path: str
     methods: List[DependentMethodWithSummary]
-    code: str
+    file_summary: str
+    change_impact: str
 
 class DependencyChainWithCode(BaseModel):
     file_path: str
