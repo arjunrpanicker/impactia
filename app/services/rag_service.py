@@ -313,20 +313,20 @@ class RAGService:
         methods = []
         lines = content.split('\n')
         
-        # Precise method patterns - only match actual function/method definitions
+        # More precise method patterns - only match actual function/method definitions
         patterns = [
-            # Python functions: def methodName(
-            (r'^\s*def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\([^)]*\)\s*:', 1),
-            # Python async functions: async def methodName(
-            (r'^\s*async\s+def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\([^)]*\)\s*:', 1),
+            # Python functions: def methodName( - must not be preceded by assignment
+            (r'^\s*def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\([^)]*\)\s*:', 1, 'python_def'),
+            # Python async functions: async def methodName( - must not be preceded by assignment
+            (r'^\s*async\s+def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\([^)]*\)\s*:', 1, 'python_async_def'),
             # JavaScript/TypeScript functions: function methodName(
-            (r'^\s*(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\([^)]*\)', 1),
+            (r'^\s*(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\([^)]*\)', 1, 'js_function'),
             # JavaScript/TypeScript methods: methodName() {
-            (r'^\s*(?:async\s+)?([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\([^)]*\)\s*\{', 1),
+            (r'^\s*(?:async\s+)?([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\([^)]*\)\s*\{', 1, 'js_method'),
             # C# methods: public/private returnType MethodName(
-            (r'^\s*(?:public|private|protected|internal)\s+(?:static\s+)?(?:async\s+)?[a-zA-Z_<>[\]]+\s+([A-Z][a-zA-Z0-9_]*)\s*\([^)]*\)', 1),
+            (r'^\s*(?:public|private|protected|internal)\s+(?:static\s+)?(?:async\s+)?[a-zA-Z_<>[\]]+\s+([A-Z][a-zA-Z0-9_]*)\s*\([^)]*\)', 1, 'csharp_method'),
             # Java methods: public/private returnType methodName(
-            (r'^\s*(?:public|private|protected)\s+(?:static\s+)?[a-zA-Z_<>[\]]+\s+([a-z][a-zA-Z0-9_]*)\s*\([^)]*\)', 1),
+            (r'^\s*(?:public|private|protected)\s+(?:static\s+)?[a-zA-Z_<>[\]]+\s+([a-z][a-zA-Z0-9_]*)\s*\([^)]*\)', 1, 'java_method'),
         ]
         
         # Keywords and built-ins to exclude
@@ -344,19 +344,24 @@ class RAGService:
             if not stripped_line or stripped_line.startswith('#') or stripped_line.startswith('//'):
                 continue
             
-            # Skip variable assignments (contains = but not in function definition context)
+            # Enhanced check for variable assignments
             if '=' in stripped_line:
-                # Check if it's a variable assignment (not a default parameter)
                 equals_pos = stripped_line.find('=')
                 before_equals = stripped_line[:equals_pos].strip()
                 
-                # If there's no function keyword before the equals, it's likely a variable
-                if not any(keyword in before_equals for keyword in ['def ', 'function ', 'public ', 'private ', 'protected ', 'internal ']):
-                    # Additional check: if it doesn't contain parentheses before =, it's definitely a variable
-                    if '(' not in before_equals:
+                # Skip if it looks like a variable assignment
+                # Examples: "metrics = {", "x = function()", "const y = ()"
+                if not any(keyword in stripped_line for keyword in ['def ', 'function ', 'public ', 'private ', 'protected ', 'internal ']):
+                    continue
+                
+                # Additional check: if equals comes before function keywords, it's an assignment
+                function_keywords = ['def ', 'function ']
+                for keyword in function_keywords:
+                    keyword_pos = stripped_line.find(keyword)
+                    if keyword_pos != -1 and equals_pos < keyword_pos:
                         continue
             
-            for pattern, group_idx in patterns:
+            for pattern, group_idx, pattern_type in patterns:
                 match = re.search(pattern, line)
                 if match:
                     method_name = match.group(group_idx)
@@ -368,6 +373,16 @@ class RAGService:
                     # Additional validation: method name should be reasonable
                     if len(method_name) < 2 or len(method_name) > 50:
                         continue
+                    
+                    # Extra validation for Python methods
+                    if pattern_type in ['python_def', 'python_async_def']:
+                        # Must have parentheses and colon for valid Python function
+                        if not (('(' in line and ')' in line and ':' in line)):
+                            continue
+                        
+                        # Skip if this looks like a dictionary or other assignment
+                        if re.match(r'^\s*[a-zA-Z_][a-zA-Z0-9_]*\s*=\s*{', stripped_line):
+                            continue
                     
                     # For method content, just use the method signature line
                     method_content = line.strip()

@@ -136,10 +136,20 @@ class MethodExtractor:
         methods = []
         lines = content.split('\n')
         
-        # Pattern for Python function definitions
+        # Pattern for Python function definitions - must start with 'def' or 'async def'
         pattern = r'^(\s*)(async\s+)?def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\([^)]*\)\s*:'
         
         for i, line in enumerate(lines):
+            # Skip lines that are clearly variable assignments
+            stripped_line = line.strip()
+            
+            # Skip if line contains '=' before 'def' (variable assignment)
+            if '=' in stripped_line:
+                equals_pos = stripped_line.find('=')
+                def_pos = stripped_line.find('def')
+                if def_pos == -1 or equals_pos < def_pos:
+                    continue
+            
             match = re.match(pattern, line)
             if match:
                 indent, is_async, method_name = match.groups()
