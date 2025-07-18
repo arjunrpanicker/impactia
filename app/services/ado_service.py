@@ -1,4 +1,5 @@
 import os
+from urllib.parse import quote
 from typing import Dict, Any
 from azure.devops.connection import Connection
 from msrest.authentication import BasicAuthentication
@@ -9,7 +10,14 @@ class AzureDevOpsService:
     def __init__(self):
         # Initialize Azure DevOps client
         personal_access_token = os.getenv("AZURE_DEVOPS_PAT")
-        organization_url = f"https://dev.azure.com/{os.getenv('AZURE_DEVOPS_ORG')}"
+        organization = os.getenv('AZURE_DEVOPS_ORG')
+        
+        if not personal_access_token or not organization:
+            raise ValueError("Missing required Azure DevOps configuration: AZURE_DEVOPS_PAT and AZURE_DEVOPS_ORG")
+        
+        # Properly encode organization name and construct URL
+        encoded_org = quote(organization, safe='')
+        organization_url = f"https://dev.azure.com/{encoded_org}"
         
         # Create a connection to Azure DevOps
         credentials = BasicAuthentication('', personal_access_token)

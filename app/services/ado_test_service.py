@@ -3,6 +3,7 @@ import base64
 import asyncio
 from typing import List, Dict, Any, Optional
 import aiohttp
+from urllib.parse import quote
 from ..models.test_generation import AdoTestCase, TestSuite, WorkItemInfo
 
 class AdoTestService:
@@ -16,9 +17,13 @@ class AdoTestService:
         if not all([self.organization, self.project, self.pat_token]):
             raise ValueError("Missing required Azure DevOps configuration")
         
-        self.base_url = f"https://dev.azure.com/{self.organization}/{self.project}/_apis"
+        # Properly encode organization and project names to handle special characters
+        encoded_org = quote(self.organization, safe='')
+        encoded_project = quote(self.project, safe='')
+        self.base_url = f"https://dev.azure.com/{encoded_org}/{encoded_project}/_apis"
         
         # Create authorization header
+        # Use empty username with PAT token for basic auth
         auth_string = f":{self.pat_token}"
         auth_bytes = auth_string.encode('ascii')
         auth_b64 = base64.b64encode(auth_bytes).decode('ascii')
@@ -26,7 +31,8 @@ class AdoTestService:
         self.headers = {
             'Authorization': f'Basic {auth_b64}',
             'Content-Type': 'application/json',
-            'Accept': 'application/json'
+            'Accept': 'application/json',
+            'User-Agent': 'ImpactAnalysisAPI/1.0'
         }
     
     async def get_work_item(self, work_item_id: int) -> Dict[str, Any]:
