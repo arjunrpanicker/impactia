@@ -13,8 +13,14 @@ from ..services.ado_service import AzureDevOpsService
 class TestGenerationService:
     def __init__(self):
         self.openai_service = AzureOpenAIService()
-        self.ado_service = AzureDevOpsService()
+        self.ado_service = None
         self.test_templates = self._load_test_templates()
+    
+    def _get_ado_service(self):
+        """Lazy initialization of ADO service"""
+        if self.ado_service is None:
+            self.ado_service = AzureDevOpsService()
+        return self.ado_service
     
     async def generate_tests(self, request: TestGenerationRequest) -> TestGenerationResponse:
         """Main method to generate comprehensive test cases"""
@@ -56,8 +62,9 @@ class TestGenerationService:
         """Retrieve work item hierarchy from ADO"""
         try:
             # Get the work item and its relations
-            work_item = await self.ado_service.get_work_item(work_item_id)
-            relations = await self.ado_service.get_work_item_relations(work_item_id)
+            ado_service = self._get_ado_service()
+            work_item = await ado_service.get_work_item(work_item_id)
+            relations = await ado_service.get_work_item_relations(work_item_id)
             
             hierarchy = WorkItemHierarchy()
             
@@ -85,8 +92,8 @@ class TestGenerationService:
                 parent_relations = [r for r in relations if r['rel'] == 'System.LinkTypes.Hierarchy-Reverse']
                 if parent_relations:
                     parent_id = parent_relations[0]['url'].split('/')[-1]
-                    current_item = await self.ado_service.get_work_item(int(parent_id))
-                    relations = await self.ado_service.get_work_item_relations(int(parent_id))
+                    current_item = await ado_service.get_work_item(int(parent_id))
+                    relations = await ado_service.get_work_item_relations(int(parent_id))
                 else:
                     current_item = None
             
@@ -102,12 +109,13 @@ class TestGenerationService:
         """Retrieve existing test cases from ADO"""
         try:
             # Get linked test cases
-            linked_tests = await self.ado_service.get_linked_test_cases(work_item_id)
+            ado_service = self._get_ado_service()
+            linked_tests = await ado_service.get_linked_test_cases(work_item_id)
             
             # Get test suites in the same area path
-            work_item = await self.ado_service.get_work_item(work_item_id)
+            work_item = await ado_service.get_work_item(work_item_id)
             area_path = work_item['fields'].get('System.AreaPath', '')
-            test_suites = await self.ado_service.get_test_suites_by_area(area_path)
+            test_suites = await ado_service.get_test_suites_by_area(area_path)
             
             return ExistingTests(
                 linked_test_cases=linked_tests,

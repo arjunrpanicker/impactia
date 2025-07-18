@@ -11,9 +11,10 @@ class AzureDevOpsService:
         # Initialize Azure DevOps client
         personal_access_token = os.getenv("AZURE_DEVOPS_PAT")
         organization = os.getenv('AZURE_DEVOPS_ORG')
+        project = os.getenv("AZURE_DEVOPS_PROJECT")
         
-        if not personal_access_token or not organization:
-            raise ValueError("Missing required Azure DevOps configuration: AZURE_DEVOPS_PAT and AZURE_DEVOPS_ORG")
+        if not personal_access_token or not organization or not project:
+            raise ValueError("Missing required Azure DevOps configuration: AZURE_DEVOPS_PAT, AZURE_DEVOPS_ORG, and AZURE_DEVOPS_PROJECT must be set")
         
         # Properly encode organization name and construct URL
         encoded_org = quote(organization, safe='')
@@ -28,7 +29,7 @@ class AzureDevOpsService:
         self.work_item_client = self.connection.clients.get_work_item_tracking_client()
         
         # Store project name
-        self.project = os.getenv("AZURE_DEVOPS_PROJECT")
+        self.project = project
         
         # Initialize test service
         self.test_service = AdoTestService()
