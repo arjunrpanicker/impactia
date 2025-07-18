@@ -143,12 +143,25 @@ class MethodExtractor:
             # Skip lines that are clearly variable assignments
             stripped_line = line.strip()
             
-            # Skip if line contains '=' before 'def' (variable assignment)
+            # CRITICAL: Only match lines that actually define functions
+            # Must start with optional whitespace, then 'def' or 'async def'
+            if not re.match(r'^\s*(async\s+)?def\s+', stripped_line):
+                continue
+            
+            # Skip if line contains '=' before 'def' (variable assignment like: x = def...)
             if '=' in stripped_line:
                 equals_pos = stripped_line.find('=')
                 def_pos = stripped_line.find('def')
                 if def_pos == -1 or equals_pos < def_pos:
                     continue
+            
+            # Skip dictionary assignments that might contain 'def' in values
+            if re.match(r'^\s*[a-zA-Z_][a-zA-Z0-9_]*\s*=\s*{', stripped_line):
+                continue
+            
+            # Skip list/tuple assignments
+            if re.match(r'^\s*[a-zA-Z_][a-zA-Z0-9_]*\s*=\s*[\[\(]', stripped_line):
+                continue
             
             match = re.match(pattern, line)
             if match:
@@ -158,13 +171,16 @@ class MethodExtractor:
                 if len(indent) > 8:  # More than 2 levels of indentation
                     continue
                 
-                methods.append(MethodInfo(
-                    name=method_name,
-                    start_line=i + 1,
-                    end_line=i + 1,  # We don't know the end line with regex
-                    signature=line.strip(),
-                    is_async=bool(is_async)
-                ))
+                # Final validation: ensure this is actually a function definition
+                if ('(' in line and ')' in line and ':' in line and 
+                    not re.match(r'^\s*[a-zA-Z_][a-zA-Z0-9_]*\s*=', stripped_line)):
+                    methods.append(MethodInfo(
+                        name=method_name,
+                        start_line=i + 1,
+                        end_line=i + 1,  # We don't know the end line with regex
+                        signature=line.strip(),
+                        is_async=bool(is_async)
+                    ))
         
         return methods
 

@@ -227,6 +227,71 @@ class ChangeSummaryService:
         except Exception as e:
             return f"Error analyzing method '{method_name}': {str(e)}"
     
+    def identify_method_containing_change(self, content: str, change_line_number: int, file_path: str = "") -> str:
+        """Identify the method name that contains a specific line change"""
+        try:
+            methods = self.method_extractor.extract_methods_from_content(content, file_path)
+            
+            # Find the method that contains the change line
+            for method in methods:
+                method_content = self.method_extractor.get_method_content(content, method)
+                method_lines = method_content.split('\n')
+                method_start = method.start_line
+                method_end = method_start + len(method_lines) - 1
+                
+                if method_start <= change_line_number <= method_end:
+                    return method.name
+            
+            # If no method contains the change, it might be at module level
+            return None
+            
+        except Exception as e:
+            print(f"Error identifying method containing change: {e}")
+            return None
+    
+    def identify_methods_from_diff(self, diff_content: str, file_path: str = "") -> List[str]:
+        """Extract method names that contain changes from a diff"""
+        try:
+            # Parse the diff to find changed lines
+            lines = diff_content.split('\n')
+            changed_line_numbers = []
+            current_line_number = 0
+            
+            for line in lines:
+                if line.startswith('@@'):
+                    # Parse hunk header to get line numbers
+                    import re
+                    match = re.search(r'@@\s*-\d+,?\d*\s*\+(\d+),?\d*\s*@@', line)
+                    if match:
+                        current_line_number = int(match.group(1))
+                elif line.startswith('+') and not line.startswith('+++'):
+                    # This is an added line
+                    changed_line_numbers.append(current_line_number)
+                    current_line_number += 1
+                elif line.startswith('-') and not line.startswith('---'):
+                    # This is a removed line, don't increment line number
+                    continue
+                elif not line.startswith('-'):
+                    # Context line
+                    current_line_number += 1
+            
+            # Extract the new content from diff
+            from ..utils.diff_utils import extract_file_content_from_diff
+            new_content = extract_file_content_from_diff(diff_content)
+            
+            # Find methods containing the changed lines
+            method_names = set()
+            for line_num in changed_line_numbers:
+                method_name = self.identify_method_containing_change(new_content, line_num, file_path)
+                if method_name:
+                    method_names.add(method_name)
+            
+            return list(method_names)
+            
+        except Exception as e:
+            print(f"Error identifying methods from diff: {e}")
+            return []
+    
     def _analyze_functional_changes(self, method_name: str, old_content: str, new_content: str) -> str:
         """Analyze functional changes between two versions of a method"""
         if old_content == new_content:

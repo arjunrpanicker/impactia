@@ -163,6 +163,31 @@ Return as JSON with method-level details."""
         except Exception as e:
             print(f"Error extracting methods from {file_path}: {e}")
             return []
+    
+    def _identify_changed_methods_from_diff(self, changes: List[CodeChange]) -> Dict[str, List[str]]:
+        """Identify actual method names that contain changes from diffs"""
+        changed_methods_by_file = {}
+        
+        for change in changes:
+            file_path = change.file_path
+            changed_methods = []
+            
+            if change.diff:
+                # Use change summary service to identify methods from diff
+                changed_methods = self.change_summary_service.identify_methods_from_diff(
+                    change.diff, file_path
+                )
+            elif change.content:
+                # For full content, extract all methods (assuming all are changed)
+                method_infos = self.method_extractor.extract_methods_from_content(
+                    change.content, file_path
+                )
+                changed_methods = [method.name for method in method_infos]
+            
+            if changed_methods:
+                changed_methods_by_file[file_path] = changed_methods
+        
+        return changed_methods_by_file
 
     def _optimize_prompt_content(self, content: str, max_tokens: int = 6000) -> str:
         """Optimize content for prompt to stay within token limits"""
@@ -522,6 +547,10 @@ Rules:
                             impact_description="Impact analysis not available in legacy format"
                         ))
                 
+        
+        # Get the actual changed methods from diffs/content
+        changed_methods_by_file = self._identify_changed_methods_from_diff(changes)
+        
                 changed_components.append(ChangedComponentWithCode(
                     file_path=file_path,
                     methods=method_objs,
@@ -533,6 +562,9 @@ Rules:
             # 3. For dependency_chains, add full file content to each impacted file
             dependency_chains = []
             for chain in (analysis_json.get("dependency_chains") or []):
+            # Use actual changed methods if available, otherwise fall back to LLM response
+            actual_changed_methods = changed_methods_by_file.get(file_path, [])
+            
                 impacted_files = []
                 for dep in chain.get("impacted_files", []):
                     dep_file_path = dep["file_path"]
@@ -540,12 +572,15 @@ Rules:
                     methods = [
                         DependentMethodWithSummary(name=m["name"], summary=m["summary"]) for m in dep.get("methods", [])
                     ]
-                    impacted_files.append(DependentFileWithCode(
-                        file_path=dep_file_path,
-                        methods=methods,
-                        file_summary=dep.get("file_summary", "This file is impacted by the changes"),
-                        change_impact=dep.get("change_impact", "Impact analysis pending")
-                    ))
+                    method_name = method_data.get("name", "")
+                    # Only include if it's actually a changed method or if we don't have diff info
+                    if not actual_changed_methods or method_name in actual_changed_methods:
+                        method_objs.append(MethodWithCode(
+                            name=method_name,
+                            summary=method_data.get("summary", ""),
+                            change_type=method_data.get("change_type", "modified"),
+                            impact_description=method_data.get("impact_description", "")
+                        ))
                 methods = [
                     DependentMethodWithSummary(name=m["name"], summary=m["summary"]) for m in chain.get("methods", [])
                 ]
@@ -556,12 +591,14 @@ Rules:
                     associated_unit_tests=chain.get("associated_unit_tests", [])
                 ))
             return ChangeAnalysisResponseWithCode(
-                summary=analysis_json["summary"],
-                changed_components=changed_components,
-                dependency_chains=dependency_chains,
-                dependency_chain_visualization=analysis_json.get("dependency_chain_visualization"),
-                risk_level=analysis_json.get("risk_level")
-            )
+                    # Only include if it's actually a changed method or if we don't have diff info
+                    if not actual_changed_methods or method_name in actual_changed_methods:
+                        method_objs.append(MethodWithCode(
+                            name=method_name,
+                            summary=f"Method '{method_name}' has been modified",
+                            change_type="modified",
+                            impact_description="Impact analysis not available in legacy format"
+                        ))
             
         except json.JSONDecodeError as e:
             print(f"Raw GPT response: {response_text if 'response_text' in locals() else 'No response'}")
