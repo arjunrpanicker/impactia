@@ -9,7 +9,9 @@ from dotenv import load_dotenv
 from .services.rag_service import RAGService
 from .services.azure_openai_service import AzureOpenAIService
 from .services.ado_service import AzureDevOpsService
+from .services.test_generation_service import TestGenerationService
 from .models.analysis import ChangeAnalysisRequest, ChangeAnalysisResponse, ChangeAnalysisRequestForm, CodeChange, ChangeAnalysisResponseWithCode
+from .models.test_generation import TestGenerationRequest, TestGenerationResponse, TestGenerationError
 from .utils.diff_utils import is_diff_format, extract_file_content_from_diff
 
 # Load environment variables
@@ -33,6 +35,7 @@ app.add_middleware(
 # Initialize services
 rag_service = RAGService()
 openai_service = AzureOpenAIService()
+test_generation_service = TestGenerationService()
 
 # Conditionally initialize ADO service
 ENABLE_ADO_INTEGRATION = os.getenv("ENABLE_ADO_INTEGRATION", "false").lower() == "true"
@@ -125,6 +128,29 @@ async def analyze_changes(
         
         return response
         
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/generate-tests", response_model=TestGenerationResponse)
+async def generate_tests(request: TestGenerationRequest):
+    """
+    Generate comprehensive test cases based on code analysis and ADO integration
+    """
+    try:
+        # Validate ADO integration is enabled
+        if not ENABLE_ADO_INTEGRATION:
+            raise HTTPException(
+                status_code=400,
+                detail="Azure DevOps integration is required for test generation. Set ENABLE_ADO_INTEGRATION=true to enable it."
+            )
+        
+        # Generate test cases
+        result = await test_generation_service.generate_tests(request)
+        
+        return result
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

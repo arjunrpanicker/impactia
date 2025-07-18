@@ -593,3 +593,66 @@ Rules:
             raise Exception(f"Missing required field in GPT response: {str(e)}")
         except ValueError as e:
             raise Exception(f"Invalid value in GPT response: {str(e)}")
+    
+    async def generate_test_cases(self, prompt: str) -> Dict[str, Any]:
+        """Generate test cases using Azure OpenAI"""
+        try:
+            response = self.client.chat.completions.create(
+                model=self.deployment_name,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": """You are a test case generation expert. Generate comprehensive test cases based on code analysis.
+                        
+Your response must be ONLY a valid JSON object with the following structure:
+{
+    "test_cases": [
+        {
+            "title": "Test case title",
+            "description": "Detailed description of what this test validates",
+            "category": "API|UI|Integration",
+            "priority": "Critical|High|Medium|Low",
+            "test_steps": [
+                {
+                    "step_number": 1,
+                    "action": "Action to perform",
+                    "expected_result": "Expected outcome",
+                    "test_data": "Required test data (optional)"
+                }
+            ],
+            "preconditions": "Prerequisites for running this test",
+            "test_data_requirements": ["data1", "data2"],
+            "automation_feasibility": "High|Medium|Low|Manual Only",
+            "estimated_duration": 15,
+            "tags": ["regression", "api", "critical"],
+            "related_code_files": ["file1.cs", "file2.cs"]
+        }
+    ]
+}
+
+Rules:
+1. Generate test cases that cover both positive and negative scenarios
+2. Focus on edge cases and boundary conditions
+3. Consider the risk level and prioritize accordingly
+4. Include specific, actionable test steps
+5. Suggest realistic automation feasibility
+6. Include relevant tags for test organization
+7. Map tests to the specific code files they validate"""
+                    },
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.2,
+                max_tokens=3000,
+                response_format={"type": "json_object"}
+            )
+            
+            response_text = response.choices[0].message.content.strip()
+            if not response_text:
+                raise Exception("Empty response from GPT for test generation")
+            
+            return json.loads(response_text)
+            
+        except json.JSONDecodeError as e:
+            raise Exception(f"Failed to parse test generation response as JSON: {str(e)}")
+        except Exception as e:
+            raise Exception(f"Test case generation failed: {str(e)}")

@@ -3,6 +3,7 @@ from typing import Dict, Any
 from azure.devops.connection import Connection
 from msrest.authentication import BasicAuthentication
 from ..models.analysis import ChangeAnalysisResponse
+from ..services.ado_test_service import AdoTestService
 
 class AzureDevOpsService:
     def __init__(self):
@@ -20,6 +21,9 @@ class AzureDevOpsService:
         
         # Store project name
         self.project = os.getenv("AZURE_DEVOPS_PROJECT")
+        
+        # Initialize test service
+        self.test_service = AdoTestService()
 
     async def update_work_item(self, work_item_id: str, analysis: ChangeAnalysisResponse):
         """
@@ -54,6 +58,22 @@ class AzureDevOpsService:
             
         except Exception as e:
             raise Exception(f"Failed to update work item: {str(e)}")
+
+    async def get_work_item(self, work_item_id: int):
+        """Get work item details"""
+        return await self.test_service.get_work_item(work_item_id)
+    
+    async def get_work_item_relations(self, work_item_id: int):
+        """Get work item relations"""
+        return await self.test_service.get_work_item_relations(work_item_id)
+    
+    async def get_linked_test_cases(self, work_item_id: int):
+        """Get test cases linked to work item"""
+        return await self.test_service.get_linked_test_cases(work_item_id)
+    
+    async def get_test_suites_by_area(self, area_path: str):
+        """Get test suites by area path"""
+        return await self.test_service.get_test_suites_by_area(area_path)
 
     def _format_analysis_as_markdown(self, analysis: ChangeAnalysisResponse) -> str:
         """
