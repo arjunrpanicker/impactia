@@ -7,6 +7,7 @@ from ..models.test_generation import (
     TestCategory, TestStep, GeneratedTests, ExistingTests, TraceabilityMatrix,
     Recommendations, AutomationFeasibility, WorkItemHierarchy, WorkItemInfo
 )
+from ..models.analysis import ChangeAnalysisResponseWithCode
 from ..services.azure_openai_service import AzureOpenAIService
 from ..services.ado_service import AzureDevOpsService
 
@@ -156,17 +157,17 @@ class TestGenerationService:
         prompt = f"""
         Generate comprehensive test cases based on the following code analysis:
         
-        SUMMARY: {code_analysis.get('summary', '')}
+        SUMMARY: {code_analysis.summary}
         
         CHANGED COMPONENTS:
         """
         
-        for component in code_analysis.get('changed_components', []):
+        for component in code_analysis.changed_components:
             prompt += f"""
-            File: {component['file_path']}
-            Risk Level: {component['risk_level']}
-            Methods Changed: {[m.get('name', '') for m in component.get('methods', [])]}
-            Impact: {component.get('impact_description', '')}
+            File: {component.file_path}
+            Risk Level: {component.risk_level}
+            Methods Changed: {[m.name for m in component.methods]}
+            Impact: {component.impact_description}
             """
         
         prompt += f"""
@@ -174,15 +175,20 @@ class TestGenerationService:
         DEPENDENCY CHAINS:
         """
         
-        for chain in code_analysis.get('dependency_chains', []):
+        if code_analysis.dependency_chains:
+            for chain in code_analysis.dependency_chains:
+                prompt += f"""
+                Primary File: {chain.file_path}
+                Impacted Files: {[f.file_path for f in chain.impacted_files]}
+                """
+        else:
             prompt += f"""
-            Primary File: {chain['file_path']}
-            Impacted Files: {[f['file_path'] for f in chain.get('impacted_files', [])]}
+            No dependency chains identified.
             """
         
         prompt += f"""
         
-        OVERALL RISK LEVEL: {code_analysis.get('risk_level', 'medium')}
+        OVERALL RISK LEVEL: {code_analysis.risk_level or 'medium'}
         
         Generate test cases with the following requirements:
         1. Include both positive and negative test scenarios
@@ -252,14 +258,14 @@ class TestGenerationService:
     
     async def _create_traceability_matrix(self, hierarchy: WorkItemHierarchy, 
                                         generated_tests: GeneratedTests, 
-                                        code_analysis: Dict[str, Any]) -> TraceabilityMatrix:
+                                        code_analysis: ChangeAnalysisResponseWithCode) -> TraceabilityMatrix:
         """Create traceability matrix linking tests to code and work items"""
         
         test_coverage_map = {}
         
         # Map test cases to changed files
-        for component in code_analysis.get('changed_components', []):
-            file_path = component['file_path']
+        for component in code_analysis.changed_components:
+            file_path = component.file_path
             test_ids = []
             
             # Find tests related to this file
@@ -280,7 +286,7 @@ class TestGenerationService:
     
     async def _generate_recommendations(self, generated_tests: GeneratedTests,
                                       existing_tests: ExistingTests,
-                                      code_analysis: Dict[str, Any]) -> Recommendations:
+                                      code_analysis: ChangeAnalysisResponseWithCode) -> Recommendations:
         """Generate recommendations for test execution and coverage"""
         
         all_generated_tests = (generated_tests.api_tests + 
@@ -294,7 +300,7 @@ class TestGenerationService:
         ]
         
         # Coverage gaps (files without tests)
-        changed_files = {comp['file_path'] for comp in code_analysis.get('changed_components', [])}
+        changed_files = {comp.file_path for comp in code_analysis.changed_components}
         tested_files = set()
         for test in all_generated_tests:
             tested_files.update(test.related_code_files)

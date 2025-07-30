@@ -2,6 +2,7 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Any
 from enum import Enum
 from datetime import datetime
+from .analysis import ChangeAnalysisResponseWithCode
 
 class TestPriority(str, Enum):
     CRITICAL = "Critical"
@@ -83,7 +84,7 @@ class AdoConfig(BaseModel):
 
 class TestGenerationRequest(BaseModel):
     pull_request_id: str = Field(..., pattern=r"^[0-9]+$")
-    code_analysis: Dict[str, Any]  # From analyze endpoint
+    code_analysis: ChangeAnalysisResponseWithCode  # Direct output from analyze endpoint
     ado_config: AdoConfig
     test_generation_options: Optional[TestGenerationOptions] = TestGenerationOptions()
 
