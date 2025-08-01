@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 from .services.rag_service import RAGService
 from .services.azure_openai_service import AzureOpenAIService
+from .services.ado_service import AzureDevOpsService
 from .services.test_generation_service import TestGenerationService
 from .services.smart_summary_service import SmartSummaryService
 from .models.analysis import ChangeAnalysisRequestForm, CodeChange, ChangeAnalysisResponseWithCode
@@ -40,14 +41,7 @@ smart_summary_service = SmartSummaryService()
 
 # Conditionally initialize ADO service
 ENABLE_ADO_INTEGRATION = os.getenv("ENABLE_ADO_INTEGRATION", "false").lower() == "true"
-ado_service = None
-if ENABLE_ADO_INTEGRATION:
-    try:
-        from .services.ado_service import AzureDevOpsService
-        ado_service = AzureDevOpsService()
-    except ImportError as e:
-        print(f"Warning: ADO integration enabled but service unavailable: {e}")
-        ENABLE_ADO_INTEGRATION = False
+ado_service = AzureDevOpsService() if ENABLE_ADO_INTEGRATION else None
 
 @app.get("/health")
 async def health_check():
