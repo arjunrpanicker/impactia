@@ -4,7 +4,8 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 from ..models.test_generation import (
     TestGenerationRequest, TestGenerationResponse, TestCase, TestPriority, 
-    TestCategory, TestStep, TestGenerationOptions, TestSummary, Traceability
+    TestCategory, TestStep, GeneratedTests, ExistingTests, TraceabilityMatrix,
+    Recommendations, AutomationFeasibility, WorkItemHierarchy, WorkItemInfo, TestGenerationOptions
 )
 from ..services.azure_openai_service import AzureOpenAIService
 
@@ -30,33 +31,30 @@ class TestGenerationService:
             if test_options is None:
                 test_options = TestGenerationOptions()
             
-            # Generate AI-powered test cases
-            test_cases = await self._generate_ai_test_cases(
+            # Generate AI-powered test cases using streamlined input
+            generated_tests = await self._generate_ai_test_cases(
                 modified_files=modified_files,
                 smart_impact_summary=smart_impact_summary,
                 dependency_visualization=dependency_visualization,
                 test_options=test_options
             )
             
-            # Create test summary
-            api_tests = [t for t in test_cases if t.type == "API"]
-            ui_tests = [t for t in test_cases if t.type == "UI"]
-            
-            summary = TestSummary(
-                total_tests=len(test_cases),
-                api_tests=len(api_tests),
-                integration_tests=0,  # Not generating integration tests
-                ui_tests=len(ui_tests)
+            # Create simplified traceability matrix without ADO dependencies
+            traceability_matrix = self._create_traceability_matrix(
+                modified_files, generated_tests
             )
             
-            # Create traceability matrix
-            traceability = self._create_traceability(modified_files, test_cases)
+            # Generate recommendations based on input
+            recommendations = self._generate_recommendations(
+                generated_tests, modified_files, smart_impact_summary
+            )
             
             return TestGenerationResponse(
                 test_generation_id=session_id,
-                summary=summary,
-                tests=test_cases,
-                traceability=traceability
+                generated_tests=generated_tests,
+                existing_tests=ExistingTests(),  # Empty since no ADO integration
+                traceability_matrix=traceability_matrix,
+                recommendations=recommendations
             )
             
         except Exception as e:
@@ -68,7 +66,7 @@ class TestGenerationService:
         smart_impact_summary: str,
         dependency_visualization: Optional[str],
         test_options: TestGenerationOptions
-    ) -> List[TestCase]:
+    ) -> GeneratedTests:
         """Generate test cases using AI for maximum efficiency"""
         
         # Prepare optimized prompt for AI
@@ -79,13 +77,21 @@ class TestGenerationService:
         # Get AI response
         ai_response = await self.openai_service.generate_test_cases(prompt)
         
-        # Parse and create test cases
-        test_cases = []
+        # Parse and categorize test cases
+        generated_tests = GeneratedTests()
+        
         for test_data in ai_response.get('test_cases', []):
             test_case = self._create_test_case_from_ai_response(test_data)
-            test_cases.append(test_case)
+            
+            # Categorize based on test category
+            if test_case.category == TestCategory.API:
+                generated_tests.api_tests.append(test_case)
+            elif test_case.category == TestCategory.UI:
+                generated_tests.ui_tests.append(test_case)
+            elif test_case.category == TestCategory.INTEGRATION:
+                generated_tests.integration_tests.append(test_case)
         
-        return test_cases
+        return generated_tests
     
     def _build_test_generation_prompt(
         self, 
@@ -122,7 +128,6 @@ class TestGenerationService:
         4. Include both positive and negative test cases
         5. Consider edge cases and error handling
         6. Provide specific, actionable test steps
-        7. Generate ONLY API and UI test cases (no integration, unit, or other types)
         
         TEST GENERATION OPTIONS:
         - Include API Tests: {test_options.include_api_tests}
@@ -136,7 +141,7 @@ class TestGenerationService:
                 {{
                     "title": "Descriptive test case title",
                     "description": "Detailed test description",
-                    "category": "API|UI",
+                    "category": "API|UI|Integration|Unit|Performance|Security",
                     "priority": "Critical|High|Medium|Low",
                     "test_steps": [
                         {{
@@ -155,7 +160,7 @@ class TestGenerationService:
             ]
         }}
         
-        Focus on quality over quantity. Generate the most valuable API and UI test cases first.
+        Focus on quality over quantity. Generate the most valuable test cases first.
         """
         
         return prompt
@@ -167,7 +172,7 @@ class TestGenerationService:
         test_steps = []
         for step_data in test_data.get('test_steps', []):
             test_steps.append(TestStep(
-                step=step_data.get('step_number', 1),
+                step_number=step_data.get('step_number', 1),
                 action=step_data.get('action', ''),
                 expected_result=step_data.get('expected_result', ''),
                 test_data=step_data.get('test_data')
@@ -176,57 +181,105 @@ class TestGenerationService:
         # Generate unique test case ID
         test_id = f"test_{uuid.uuid4().hex[:8]}"
         
-        # Ensure only API or UI test types
-        test_type = test_data.get('category', 'API')
-        if test_type not in ['API', 'UI']:
-            test_type = 'API'  # Default to API if not API or UI
-        
         return TestCase(
             id=test_id,
-            type=test_type,
             title=test_data.get('title', 'Generated Test Case'),
             description=test_data.get('description', ''),
-            priority=test_data.get('priority', 'Medium'),
-            preconditions=test_data.get('preconditions'),
+            priority=TestPriority(test_data.get('priority', 'Medium')),
+            category=TestCategory(test_data.get('category', 'API')),
             test_steps=test_steps,
+            preconditions=test_data.get('preconditions'),
+            test_data_requirements=test_data.get('test_data_requirements', []),
+            automation_feasibility=AutomationFeasibility(
+                test_data.get('automation_feasibility', 'Medium')
+            ),
+            estimated_duration=test_data.get('estimated_duration', 10),
             tags=test_data.get('tags', []),
-            related_files=test_data.get('related_code_files', [])
+            related_code_files=test_data.get('related_code_files', [])
         )
     
-    def _create_traceability(
+    def _create_traceability_matrix(
         self, 
-        modified_files: List[str], 
-        test_cases: List[TestCase]
-    ) -> Traceability:
-        """Create traceability matrix matching the required schema"""
+        modified_files: List[str],
+        generated_tests: GeneratedTests
+    ) -> TraceabilityMatrix:
+        """Create traceability matrix without ADO dependencies"""
         
-        file_to_tests = {}
+        # Create coverage map based on modified files
+        test_coverage_map = {}
         
-        # Map each file to its related test IDs
+        # Map files to test cases
+        all_tests = (generated_tests.api_tests + 
+                    generated_tests.ui_tests + 
+                    generated_tests.integration_tests)
+        
         for file_path in modified_files:
-            related_test_ids = [
-                test.id for test in test_cases 
-                if file_path in test.related_files
+            related_tests = [
+                test.id for test in all_tests 
+                if file_path in test.related_code_files
             ]
-            file_to_tests[file_path] = related_test_ids
+            test_coverage_map[file_path] = related_tests
         
-        return Traceability(file_to_tests=file_to_tests)
+        return TraceabilityMatrix(
+            work_item_hierarchy=WorkItemHierarchy(),  # Empty since no ADO integration
+            test_coverage_map=test_coverage_map
+        )
+    
+    def _generate_recommendations(
+        self, 
+        generated_tests: GeneratedTests, 
+        modified_files: List[str],
+        smart_impact_summary: str
+    ) -> Recommendations:
+        """Generate recommendations based on input"""
+        
+        all_tests = (generated_tests.api_tests + 
+                    generated_tests.ui_tests + 
+                    generated_tests.integration_tests)
+        
+        # Identify priority tests (Critical and High priority)
+        priority_tests = [
+            test.id for test in all_tests 
+            if test.priority in [TestPriority.CRITICAL, TestPriority.HIGH]
+        ]
+        
+        # Identify coverage gaps (files without tests)
+        coverage_gaps = []
+        for file_path in modified_files:
+            has_tests = any(
+                file_path in test.related_code_files 
+                for test in all_tests
+            )
+            if not has_tests:
+                coverage_gaps.append(f"No tests found for {file_path}")
+        
+        # Identify automation candidates (tests with High automation feasibility)
+        automation_candidates = [
+            test.id for test in all_tests 
+            if test.automation_feasibility == AutomationFeasibility.HIGH
+        ]
+        
+        return Recommendations(
+            priority_tests=priority_tests,
+            coverage_gaps=coverage_gaps,
+            automation_candidates=automation_candidates
+        )
     
     def _load_test_templates(self) -> Dict[str, Any]:
-        """Load test case templates for API and UI categories only"""
+        """Load test case templates for different categories"""
         return {
             'api': {
                 'positive': "Verify API endpoint returns expected response for valid input",
                 'negative': "Verify API endpoint handles invalid input gracefully",
-                'boundary': "Test API endpoint with boundary values",
-                'authentication': "Verify API authentication and authorization",
-                'error_handling': "Test API error responses and status codes"
+                'boundary': "Test API endpoint with boundary values"
             },
             'ui': {
                 'interaction': "Verify user interaction produces expected result",
                 'validation': "Verify form validation works correctly",
-                'navigation': "Verify navigation between pages works correctly",
-                'responsive': "Test UI responsiveness across different screen sizes",
-                'accessibility': "Verify UI accessibility features and compliance"
+                'navigation': "Verify navigation between pages works correctly"
+            },
+            'integration': {
+                'data_flow': "Verify data flows correctly between components",
+                'service_integration': "Verify service integration works as expected"
             }
         }

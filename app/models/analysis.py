@@ -68,7 +68,6 @@ class ChangedComponentWithCode(BaseModel):
     methods: List[MethodWithCode]
     impact_description: str
     risk_level: RiskLevel
-    associated_unit_tests: List[str]
     file_summary: str
 
 class DependentMethodWithSummary(BaseModel):
@@ -85,7 +84,6 @@ class DependencyChainWithCode(BaseModel):
     file_path: str
     methods: List[DependentMethodWithSummary]
     impacted_files: List[DependentFileWithCode]
-    associated_unit_tests: List[str]
 
 class ChangeAnalysisResponseWithCode(BaseModel):
     summary: str
@@ -93,19 +91,18 @@ class ChangeAnalysisResponseWithCode(BaseModel):
     dependency_chains: Optional[List[DependencyChainWithCode]] = None
     dependency_chain_visualization: Optional[List[str]] = None
     risk_level: Optional[RiskLevel] = None
+    smart_impact_summary: Optional[str] = None  # Smart impact summary for test generation
 
 class ChangedComponent(BaseModel):
     file_path: str
     methods: List[str]
     impact_description: str
     risk_level: RiskLevel
-    associated_unit_tests: List[str]  # Full paths to associated unit test files
 
 class DependencyChain(BaseModel):
     file_path: str
     methods: List[DependentMethod]
     impacted_files: List[DependentFile]
-    associated_unit_tests: List[str]  # Full paths to associated unit test files
 
 class ChangeAnalysisResponse(BaseModel):
     summary: str

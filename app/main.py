@@ -10,7 +10,8 @@ from .services.rag_service import RAGService
 from .services.azure_openai_service import AzureOpenAIService
 from .services.ado_service import AzureDevOpsService
 from .services.test_generation_service import TestGenerationService
-from .models.analysis import ChangeAnalysisRequest, ChangeAnalysisResponse, ChangeAnalysisRequestForm, CodeChange, ChangeAnalysisResponseWithCode
+from .services.smart_summary_service import SmartSummaryService
+from .models.analysis import ChangeAnalysisRequestForm, CodeChange, ChangeAnalysisResponseWithCode
 from .models.test_generation import TestGenerationRequest, TestGenerationResponse, TestGenerationError
 from .utils.diff_utils import is_diff_format, extract_file_content_from_diff
 
@@ -36,6 +37,7 @@ app.add_middleware(
 rag_service = RAGService()
 openai_service = AzureOpenAIService()
 test_generation_service = TestGenerationService()
+smart_summary_service = SmartSummaryService()
 
 # Conditionally initialize ADO service
 ENABLE_ADO_INTEGRATION = os.getenv("ENABLE_ADO_INTEGRATION", "false").lower() == "true"
@@ -116,8 +118,11 @@ async def analyze_changes(
             dependency_chains=analysis_result.dependency_chains,
             dependency_chain_visualization=analysis_result.dependency_chain_visualization,
             risk_level=analysis_result.risk_level,
-            code=related_code
         )
+        
+        # 3.5. Generate smart impact summary
+        smart_impact_summary = smart_summary_service.get_smart_impact_summary(response)
+        response.smart_impact_summary = smart_impact_summary
         
         # 4. Update ADO if requested and enabled
         if request.update_ado and ENABLE_ADO_INTEGRATION and request.ado_item_id:
@@ -134,18 +139,18 @@ async def analyze_changes(
 @app.post("/generate-tests", response_model=TestGenerationResponse)
 async def generate_tests(request: TestGenerationRequest):
     """
-    Generate comprehensive test cases based on code analysis and ADO integration
+    Generate comprehensive test cases with minimal input.
+    Takes only essential information: modified files, smart impact summary, and dependency visualization.
     """
     try:
-        # Validate ADO integration is enabled
-        if not ENABLE_ADO_INTEGRATION:
-            raise HTTPException(
-                status_code=400,
-                detail="Azure DevOps integration is required for test generation. Set ENABLE_ADO_INTEGRATION=true to enable it."
-            )
-        
-        # Generate test cases
-        result = await test_generation_service.generate_tests(request)
+        # Generate test cases using the input
+        result = await test_generation_service.generate_tests(
+            pull_request_id=request.pull_request_id,
+            modified_files=request.modified_files,
+            smart_impact_summary=request.smart_impact_summary,
+            dependency_visualization=request.dependency_visualization,
+            test_options=request.test_generation_options
+        )
         
         return result
         

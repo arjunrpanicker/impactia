@@ -2,7 +2,6 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Any
 from enum import Enum
 from datetime import datetime
-from .analysis import ChangeAnalysisResponseWithCode
 
 class TestPriority(str, Enum):
     CRITICAL = "Critical"
@@ -25,24 +24,21 @@ class AutomationFeasibility(str, Enum):
     MANUAL_ONLY = "Manual Only"
 
 class TestStep(BaseModel):
-    step_number: int
+    step: int
     action: str
     expected_result: str
     test_data: Optional[str] = None
 
 class TestCase(BaseModel):
     id: str
+    type: str
     title: str = Field(..., max_length=200)
     description: str = Field(..., max_length=1000)
-    priority: TestPriority
-    category: TestCategory
-    test_steps: List[TestStep]
+    priority: str
     preconditions: Optional[str] = None
-    test_data_requirements: List[str] = []
-    automation_feasibility: AutomationFeasibility = AutomationFeasibility.MEDIUM
-    estimated_duration: Optional[int] = None  # in minutes
+    test_steps: List[TestStep]
     tags: List[str] = []
-    related_code_files: List[str] = []
+    related_files: List[str] = []
 
 class AdoTestCase(BaseModel):
     id: int
@@ -82,36 +78,30 @@ class AdoConfig(BaseModel):
     project_name: Optional[str] = Field(None, max_length=100)
     organization: Optional[str] = Field(None, max_length=100)
 
+# Test generation request model
 class TestGenerationRequest(BaseModel):
+    """Test generation request with only essential information"""
     pull_request_id: str = Field(..., pattern=r"^[0-9]+$")
-    code_analysis: ChangeAnalysisResponseWithCode  # Direct output from analyze endpoint
-    ado_config: AdoConfig
+    modified_files: List[str] = Field(..., description="List of file paths that were modified")
+    smart_impact_summary: str = Field(..., description="Smart impact summary from analysis")
+    dependency_visualization: Optional[str] = Field(None, description="Dependency chain visualization for context")
     test_generation_options: Optional[TestGenerationOptions] = TestGenerationOptions()
 
-class GeneratedTests(BaseModel):
-    api_tests: List[TestCase] = []
-    ui_tests: List[TestCase] = []
-    integration_tests: List[TestCase] = []
+# Test generation response models
+class TestSummary(BaseModel):
+    total_tests: int
+    api_tests: int
+    integration_tests: int
+    ui_tests: int
 
-class ExistingTests(BaseModel):
-    linked_test_cases: List[AdoTestCase] = []
-    test_suites: List[TestSuite] = []
-
-class TraceabilityMatrix(BaseModel):
-    work_item_hierarchy: WorkItemHierarchy
-    test_coverage_map: Dict[str, List[str]] = {}  # file_path -> test_case_ids
-
-class Recommendations(BaseModel):
-    priority_tests: List[str] = []
-    coverage_gaps: List[str] = []
-    automation_candidates: List[str] = []
+class Traceability(BaseModel):
+    file_to_tests: Dict[str, List[str]]
 
 class TestGenerationResponse(BaseModel):
     test_generation_id: str
-    generated_tests: GeneratedTests
-    existing_tests: ExistingTests
-    traceability_matrix: TraceabilityMatrix
-    recommendations: Recommendations
+    summary: TestSummary
+    tests: List[TestCase]
+    traceability: Traceability
 
 class TestGenerationError(BaseModel):
     error_code: str
